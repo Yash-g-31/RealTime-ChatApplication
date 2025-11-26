@@ -3,22 +3,65 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import permissions
 from django.contrib.auth.models import User
-from .serializers import RegisterSerializer, LoginSerializer, UserSerializer
 from django.conf import settings
-from .models import Profile
 from django.utils import timezone
-from chat.models import Message
-from django_ratelimit.decorators import ratelimit
-from django.utils.decorators import method_decorator
+from django.core.cache import cache
 
-@method_decorator(
-    ratelimit(key="ip", rate="3/m", block=True),
-    name="post"
-)
+from .serializers import RegisterSerializer, LoginSerializer, UserSerializer
+from .models import Profile
+from chat.models import Message
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+
+class RateLimitedTokenObtainPairView(TokenObtainPairView):
+    """
+    JWT login view with per-IP rate limiting.
+    Used at /api/login/
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        # Rate limit: max 5 login attempts per 60 seconds per IP
+        if rate_limit(request, action="login", limit=5, window_seconds=60):
+            return Response(
+                {"detail": "Too many login attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # Call the original SimpleJWT logic
+        return super().post(request, *args, **kwargs)
+
+def rate_limit(request, action: str, limit: int, window_seconds: int = 60) -> bool:
+    """
+    Simple per-IP rate limiter using Django cache.
+
+    action: "login", "register", "send_message", etc.
+    limit:  allowed attempts within window_seconds per IP.
+    returns True if blocked, False if allowed.
+    """
+    ip = request.META.get("REMOTE_ADDR", "unknown")
+    key = f"rl:{action}:{ip}"
+
+    attempts = cache.get(key, 0)
+
+    if attempts >= limit:
+        return True  # blocked
+
+    cache.set(key, attempts + 1, timeout=window_seconds)
+    return False
+
+
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]  # still public, but protected by secret
 
     def post(self, request):
+        # 🔹 Rate limit: max 3 registrations per minute per IP
+        if rate_limit(request, action="register", limit=3, window_seconds=60):
+            return Response(
+                {"detail": "Too many registration attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         # 1) Check secret key
         secret = request.data.get("secret")
         if secret != settings.REGISTRATION_SECRET:
@@ -35,21 +78,29 @@ class RegisterView(APIView):
                 UserSerializer(user).data,
                 status=status.HTTP_201_CREATED
             )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@method_decorator(
-    ratelimit(key="ip", rate="5/m", block=True),
-    name="post"
-)
+
 class LoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
     def post(self, request):
+        # 🔹 Rate limit: max 5 login attempts per minute per IP
+        if rate_limit(request, action="login", limit=5, window_seconds=60):
+            return Response(
+                {"detail": "Too many login attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.validated_data['user']
+            user = serializer.validated_data["user"]
             return Response(
                 UserSerializer(user).data,
                 status=status.HTTP_200_OK
             )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -82,7 +133,6 @@ class UserListView(APIView):
             )
 
             if last_msg:
-                # Short preview (like WhatsApp)
                 text = last_msg.content
                 if len(text) > 40:
                     text = text[:40] + "…"
@@ -95,11 +145,11 @@ class UserListView(APIView):
 
             result.append(
                 {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "last_message": last_message,
-                "last_message_time": last_message_time,
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "last_message": last_message,
+                    "last_message_time": last_message_time,
                 }
             )
 
@@ -110,27 +160,28 @@ class UserPresenceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-      users = User.objects.exclude(id=request.user.id)
-      data = []
+        users = User.objects.exclude(id=request.user.id)
+        data = []
 
-      now = timezone.now()
+        now = timezone.now()
 
-      for user in users:
-          # Safely get or create profile
-          profile, _ = Profile.objects.get_or_create(user=user)
-          last_seen = profile.last_seen
+        for user in users:
+            profile, _ = Profile.objects.get_or_create(user=user)
+            last_seen = profile.last_seen
 
-          if last_seen:
-              seconds = (now - last_seen).total_seconds()
-              online = seconds < 60  # 1 minute window
-          else:
-              online = False
+            if last_seen:
+                seconds = (now - last_seen).total_seconds()
+                online = seconds < 60  # 1 minute window
+            else:
+                online = False
 
-          data.append({
-              "id": user.id,
-              "username": user.username,
-              "online": online,
-              "last_seen": last_seen,
-          })
+            data.append(
+                {
+                    "id": user.id,
+                    "username": user.username,
+                    "online": online,
+                    "last_seen": last_seen,
+                }
+            )
 
-      return Response(data, status=200)
+        return Response(data, status=200)

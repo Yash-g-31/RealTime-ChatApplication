@@ -1,18 +1,35 @@
 from django.contrib.auth.models import User
+from django.db import models
+from django.core.cache import cache
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from .models import Message, Block
 from .serializers import MessageSerializer
-from django.db import models
-from django_ratelimit.decorators import ratelimit
-from django.utils.decorators import method_decorator
 
-@method_decorator(
-    ratelimit(key="ip", rate="20/m", block=True),
-    name="post"
-)
+
+def rate_limit(request, action: str, limit: int, window_seconds: int = 60) -> bool:
+    """
+    Simple per-IP rate limiter using Django cache.
+
+    action: "login", "register", "send_message", etc.
+    limit:  allowed attempts within window_seconds per IP.
+    returns True if blocked, False if allowed.
+    """
+    ip = request.META.get("REMOTE_ADDR", "unknown")
+    key = f"rl:{action}:{ip}"
+
+    attempts = cache.get(key, 0)
+
+    if attempts >= limit:
+        return True  # blocked
+
+    cache.set(key, attempts + 1, timeout=window_seconds)
+    return False
+
+
 class MessageListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -22,14 +39,14 @@ class MessageListCreateView(APIView):
         Returns messages between logged-in user and user_id.
         If 'after' is passed, only return messages with id > after.
         """
-        other_user_id = request.query_params.get('user_id')
+        other_user_id = request.query_params.get("user_id")
         if not other_user_id:
             return Response(
                 {"detail": "user_id query param is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        after_id = request.query_params.get('after')
+        after_id = request.query_params.get("after")
 
         try:
             other_user = User.objects.get(id=other_user_id)
@@ -44,13 +61,13 @@ class MessageListCreateView(APIView):
         qs = Message.objects.filter(
             sender__in=[user, other_user],
             receiver__in=[user, other_user],
-        ).order_by('id')  # order by id so 'after' makes sense
+        ).order_by("id")
 
         # Mark all messages FROM otherUser TO currentUser as read
         Message.objects.filter(
             sender=other_user,
             receiver=request.user,
-            is_read=False
+            is_read=False,
         ).update(is_read=True)
 
         if after_id:
@@ -58,18 +75,26 @@ class MessageListCreateView(APIView):
 
         serializer = MessageSerializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
     def post(self, request):
         """
         POST /api/chat/messages/
         body: { "receiver": 2, "content": "hello" }
         sender = request.user
         """
+
+        # 🔹 Rate limit: max 20 sent messages per minute per IP
+        if rate_limit(request, action="send_message", limit=20, window_seconds=60):
+            return Response(
+                {"detail": "Too many messages sent. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         receiver_id = request.data.get("receiver")
         if not receiver_id:
             return Response(
                 {"detail": "receiver is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
@@ -77,26 +102,26 @@ class MessageListCreateView(APIView):
         except User.DoesNotExist:
             return Response(
                 {"detail": "Receiver not found"},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         # 1) You blocked them → you can't send
         if Block.objects.filter(blocker=request.user, blocked=receiver).exists():
             return Response(
                 {"detail": "You blocked this user."},
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # 2) They blocked you → you can't send
         if Block.objects.filter(blocker=receiver, blocked=request.user).exists():
             return Response(
                 {"detail": "This user has blocked you."},
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
-        
+
         serializer = MessageSerializer(
             data=request.data,
-            context={'request': request}  # 👈 pass request to serializer
+            context={"request": request},
         )
         if serializer.is_valid():
             serializer.save()
@@ -118,13 +143,13 @@ class BlockView(APIView):
         if not user_id:
             return Response(
                 {"detail": "user_id is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if str(request.user.id) == str(user_id):
             return Response(
                 {"detail": "You cannot block yourself."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
@@ -132,12 +157,12 @@ class BlockView(APIView):
         except User.DoesNotExist:
             return Response(
                 {"detail": "User not found"},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         Block.objects.get_or_create(
             blocker=request.user,
-            blocked=other_user
+            blocked=other_user,
         )
 
         return Response({"blocked": True}, status=status.HTTP_200_OK)
@@ -151,12 +176,12 @@ class BlockView(APIView):
         if not user_id:
             return Response(
                 {"detail": "user_id is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         Block.objects.filter(
             blocker=request.user,
-            blocked_id=user_id
+            blocked_id=user_id,
         ).delete()
 
         return Response({"blocked": False}, status=status.HTTP_200_OK)
@@ -179,7 +204,7 @@ class BlockStatusView(APIView):
         if not user_id:
             return Response(
                 {"detail": "user_id query param is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
@@ -187,17 +212,17 @@ class BlockStatusView(APIView):
         except User.DoesNotExist:
             return Response(
                 {"detail": "User not found"},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         blocked_by_me = Block.objects.filter(
             blocker=request.user,
-            blocked=other_user
+            blocked=other_user,
         ).exists()
 
         blocked_me = Block.objects.filter(
             blocker=other_user,
-            blocked=request.user
+            blocked=request.user,
         ).exists()
 
         return Response(
@@ -205,8 +230,9 @@ class BlockStatusView(APIView):
                 "blocked_by_me": blocked_by_me,
                 "blocked_me": blocked_me,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
+
 
 class UnreadCountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -222,11 +248,11 @@ class UnreadCountView(APIView):
         """
         unread = Message.objects.filter(
             receiver=request.user,
-            is_read=False
-        ).values('sender').annotate(count=models.Count('id'))
+            is_read=False,
+        ).values("sender").annotate(count=models.Count("id"))
 
         data = [
-            {"user_id": item['sender'], "count": item['count']}
+            {"user_id": item["sender"], "count": item["count"]}
             for item in unread
         ]
 
