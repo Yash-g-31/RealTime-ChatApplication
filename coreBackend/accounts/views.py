@@ -8,8 +8,13 @@ from django.conf import settings
 from .models import Profile
 from django.utils import timezone
 from chat.models import Message
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
 
-
+@method_decorator(
+    ratelimit(key="ip", rate="3/m", block=True),
+    name="post"
+)
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]  # still public, but protected by secret
 
@@ -32,7 +37,10 @@ class RegisterView(APIView):
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
+@method_decorator(
+    ratelimit(key="ip", rate="5/m", block=True),
+    name="post"
+)
 class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)

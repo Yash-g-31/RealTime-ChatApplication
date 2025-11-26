@@ -6,8 +6,13 @@ from rest_framework import status, permissions
 from .models import Message, Block
 from .serializers import MessageSerializer
 from django.db import models
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
 
-
+@method_decorator(
+    ratelimit(key="ip", rate="20/m", block=True),
+    name="post"
+)
 class MessageListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
