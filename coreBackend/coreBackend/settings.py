@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from datetime import timedelta
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,7 +22,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-$x_edtppw!!fl^(9job8%_8c1dgjl)on$q!+6e0xu!(+0ba0iy'
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
@@ -29,6 +33,7 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
     "yashgarje31.pythonanywhere.com",
+    "realtime-chatapp-frontend.vercel.app"
 ]
 
 
@@ -59,7 +64,13 @@ MIDDLEWARE = [
     'accounts.middleware.LastSeenMiddleware'
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True  # only for development
+CORS_ALLOWED_ORIGINS = [
+    "https://realtime-chatapp-frontend.vercel.app",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://realtime-chatapp-frontend.vercel.app",
+]
 
 ROOT_URLCONF = 'coreBackend.urls'
 
@@ -134,11 +145,13 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-from datetime import timedelta
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=6),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 REST_FRAMEWORK = {
@@ -148,4 +161,6 @@ REST_FRAMEWORK = {
 }
 
 
-REGISTRATION_SECRET = "my_super_secret_code_123"  # change this
+REGISTRATION_SECRET = os.environ.get(
+    "REGISTRATION_SECRET",
+)
