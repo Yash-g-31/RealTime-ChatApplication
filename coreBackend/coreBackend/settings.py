@@ -146,10 +146,11 @@ REGISTRATION_SECRET = os.environ.get(
 RATELIMIT_ENABLE = True
 RATELIMIT_USE_CACHE = "default"
 
-# 🔹 Simple in-memory cache for custom rate limiting
+# 🔹 Shared cache using database (works across all processes)
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "realtime-chat-cache",
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "rate_limit_cache",
     }
 }
+
